@@ -37,7 +37,7 @@ uv run uvicorn aispend.proxy.app:app --port 8787
 Point any Anthropic-compatible client at the proxy:
 
 ```bash
-export ANTHROPIC_BASE_URL=http://localhost:8787
+$env:ANTHROPIC_BASE_URL="http://localhost:8787"
 ```
 
 The MCP server is normally launched by Claude Code's MCP config, not run
