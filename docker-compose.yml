@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aispend
+      POSTGRES_PASSWORD: aispend
+      POSTGRES_DB: aispend
+    ports:
+      - "5555:5432"
+    volumes:
+      - aispend-pgdata:/var/lib/postgresql/data
+
+volumes:
+  aispend-pgdata:
