@@ -24,14 +24,32 @@ _GROUP_BY_COLUMNS = {
 }
 
 _REQUEST_COLUMNS = (
-    "id, model, input_tokens, output_tokens, cost_usd, latency_ms, source_tool, created_at"
+    "id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, "
+    "cache_write_1h_tokens, cost_usd, latency_ms, source_tool, created_at"
+)
+
+# Every token counter that contributes to the billable size of a request.
+_TOTAL_TOKENS_SQL = (
+    "(input_tokens + output_tokens + cache_read_tokens "
+    "+ cache_write_5m_tokens + cache_write_1h_tokens)"
 )
 
 
 def get_pool(database_url: str | None = None) -> ConnectionPool:
+    """Returns the process-wide pool, opening it on first use.
+
+    The first call wins: a later call with a different `database_url` gets the
+    already-open pool, not a second one.
+    """
     global _pool
     if _pool is None:
-        _pool = ConnectionPool(database_url or os.environ["DATABASE_URL"], open=True)
+        url = database_url or os.environ.get("DATABASE_URL")
+        if not url:
+            raise RuntimeError(
+                "DATABASE_URL is not set. Copy .env.example to .env and export it, "
+                "or pass database_url explicitly."
+            )
+        _pool = ConnectionPool(url, open=True)
     return _pool
 
 
@@ -62,15 +80,33 @@ def insert_request(
     cost_usd: float,
     latency_ms: int,
     source_tool: str | None,
+    cache_read_tokens: int = 0,
+    cache_write_5m_tokens: int = 0,
+    cache_write_1h_tokens: int = 0,
 ) -> None:
-    """Metadata only — never pass prompt/response content into this function."""
+    """Metadata only — never pass prompt/response content into this function.
+
+    `input_tokens` is the uncached remainder the API reports; the cache
+    counters are stored alongside it rather than summed into it.
+    """
     conn.execute(
         """
         INSERT INTO requests
-            (model, input_tokens, output_tokens, cost_usd, latency_ms, source_tool, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, now())
+            (model, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens,
+             cache_write_1h_tokens, cost_usd, latency_ms, source_tool, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
         """,
-        (model, input_tokens, output_tokens, cost_usd, latency_ms, source_tool),
+        (
+            model,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_5m_tokens,
+            cache_write_1h_tokens,
+            cost_usd,
+            latency_ms,
+            source_tool,
+        ),
     )
 
 
@@ -133,22 +169,33 @@ def get_expensive_requests(
         return cur.fetchall()
 
 
-def get_all_requests(
+def get_small_requests(
     conn: psycopg.Connection,
     *,
+    model_prefix: str,
+    max_total_tokens: int,
     since: datetime | None = None,
     until: datetime | None = None,
 ) -> list[dict]:
+    """Requests on models matching `model_prefix` whose total tokens fall below
+    `max_total_tokens`.
+
+    The filter runs in SQL rather than in Python so the whole table doesn't
+    have to cross the wire to find what is normally a handful of rows.
+    `model_prefix` is matched with LIKE, so it must not contain % or _.
+    """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"""
-            SELECT {_REQUEST_COLUMNS}
+            SELECT {_REQUEST_COLUMNS}, {_TOTAL_TOKENS_SQL} AS total_tokens
             FROM requests
-            WHERE (%s::timestamptz IS NULL OR created_at >= %s)
+            WHERE model LIKE %s
+              AND {_TOTAL_TOKENS_SQL} < %s
+              AND (%s::timestamptz IS NULL OR created_at >= %s)
               AND (%s::timestamptz IS NULL OR created_at < %s)
             ORDER BY created_at
             """,
-            (since, since, until, until),
+            (f"{model_prefix}%", max_total_tokens, since, since, until, until),
         )
         return cur.fetchall()
 

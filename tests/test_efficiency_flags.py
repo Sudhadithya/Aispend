@@ -52,8 +52,46 @@ def test_does_not_flag_opus_with_large_prompt(conn):
 
 
 def test_does_not_flag_non_opus_small_prompt(conn):
-    _insert(conn, model="claude-sonnet-4-5-20250929", input_tokens=50, output_tokens=20)
+    _insert(conn, model="claude-sonnet-5", input_tokens=50, output_tokens=20)
 
     flags = get_efficiency_flags()
 
     assert flags == []
+
+
+def test_flags_current_generation_opus(conn):
+    _insert(conn, model="claude-opus-5", input_tokens=40, output_tokens=10)
+
+    flags = get_efficiency_flags()
+
+    assert [f["model"] for f in flags] == ["claude-opus-5"]
+
+
+def test_does_not_flag_small_prompt_against_large_cached_context(conn):
+    """A short question over 50k of cached context is not a small request."""
+    _insert(
+        conn,
+        model="claude-opus-5",
+        input_tokens=20,
+        output_tokens=30,
+        cache_read_tokens=50_000,
+    )
+
+    flags = get_efficiency_flags()
+
+    assert flags == []
+
+
+def test_total_tokens_counts_cached_tokens(conn):
+    _insert(
+        conn,
+        model="claude-opus-5",
+        input_tokens=20,
+        output_tokens=30,
+        cache_read_tokens=100,
+        cache_write_5m_tokens=50,
+    )
+
+    flags = get_efficiency_flags()
+
+    assert flags[0]["total_tokens"] == 200

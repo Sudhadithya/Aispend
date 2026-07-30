@@ -14,6 +14,7 @@ from aispend.mcp_server.tools.expensive_requests import (
     get_expensive_requests as _get_expensive_requests,
 )
 from aispend.mcp_server.tools.spend_summary import get_spend_summary as _get_spend_summary
+from aispend.storage.db import close_pool
 
 mcp = MCPServer("aispend")
 
@@ -52,7 +53,14 @@ def check_budget(
 
 
 def main() -> None:
-    mcp.run(transport="stdio")
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        # Close the pool while the interpreter is still alive. Left to garbage
+        # collection at shutdown, psycopg_pool's finalizer tries to join its
+        # worker threads and raises, which on a stdio transport means a stray
+        # traceback on stderr every time the server exits.
+        close_pool()
 
 
 if __name__ == "__main__":

@@ -1,9 +1,13 @@
 """Heuristic 'cheaper model likely fine' report.
 
 Advisory only, not a validated savings guarantee. Rule: flag requests sent to
-an Opus-tier model where total tokens (input + output) fall under
-SMALL_REQUEST_TOKEN_THRESHOLD — a proxy for "this looked like a simple prompt
-that didn't need the most expensive model."
+an Opus-tier model whose total tokens fall under SMALL_REQUEST_TOKEN_THRESHOLD
+— a proxy for "this looked like a simple prompt that didn't need the most
+expensive model."
+
+"Total tokens" counts cached tokens as well as uncached ones. A short question
+asked against a large cached system prompt is not a small request, and
+shouldn't be flagged as one just because its uncached remainder is tiny.
 """
 
 from __future__ import annotations
@@ -20,25 +24,26 @@ def get_efficiency_flags(
     since: datetime | None = None, until: datetime | None = None
 ) -> list[dict]:
     with db.get_connection() as conn:
-        rows = db.get_all_requests(conn, since=since, until=until)
+        rows = db.get_small_requests(
+            conn,
+            model_prefix=OPUS_MODEL_PREFIX,
+            max_total_tokens=SMALL_REQUEST_TOKEN_THRESHOLD,
+            since=since,
+            until=until,
+        )
 
-    flags = []
-    for row in rows:
-        total_tokens = row["input_tokens"] + row["output_tokens"]
-        is_opus = row["model"].startswith(OPUS_MODEL_PREFIX)
-        if is_opus and total_tokens < SMALL_REQUEST_TOKEN_THRESHOLD:
-            flags.append(
-                {
-                    "id": row["id"],
-                    "model": row["model"],
-                    "total_tokens": total_tokens,
-                    "cost_usd": float(row["cost_usd"]),
-                    "created_at": row["created_at"].isoformat(),
-                    "reason": (
-                        f"Opus used for a {total_tokens}-token request "
-                        f"(< {SMALL_REQUEST_TOKEN_THRESHOLD} tokens) — "
-                        "a cheaper model may have sufficed."
-                    ),
-                }
-            )
-    return flags
+    return [
+        {
+            "id": row["id"],
+            "model": row["model"],
+            "total_tokens": row["total_tokens"],
+            "cost_usd": float(row["cost_usd"]),
+            "created_at": row["created_at"].isoformat(),
+            "reason": (
+                f"Opus used for a {row['total_tokens']}-token request "
+                f"(< {SMALL_REQUEST_TOKEN_THRESHOLD} tokens) — "
+                "a cheaper model may have sufficed."
+            ),
+        }
+        for row in rows
+    ]

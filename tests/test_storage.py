@@ -79,3 +79,33 @@ def test_get_total_spend(conn):
     total = db.get_total_spend(conn)
 
     assert total == pytest.approx(4.0)
+
+
+def test_cache_token_columns_round_trip(conn):
+    _insert_sample(conn, cache_read_tokens=1234, cache_write_5m_tokens=56, cache_write_1h_tokens=78)
+
+    [row] = db.get_expensive_requests(conn, limit=1)
+
+    assert row["cache_read_tokens"] == 1234
+    assert row["cache_write_5m_tokens"] == 56
+    assert row["cache_write_1h_tokens"] == 78
+
+
+def test_cache_token_columns_default_to_zero(conn):
+    _insert_sample(conn)
+
+    [row] = db.get_expensive_requests(conn, limit=1)
+
+    assert (row["cache_read_tokens"], row["cache_write_5m_tokens"]) == (0, 0)
+
+
+def test_summary_group_by_day(conn):
+    _insert_sample(conn, cost_usd=1.0)
+    _insert_sample(conn, cost_usd=2.0)
+
+    since = datetime.now(UTC) - timedelta(days=1)
+    until = datetime.now(UTC) + timedelta(days=1)
+    rows = db.get_spend_summary(conn, since=since, until=until, group_by="day")
+
+    assert len(rows) == 1
+    assert float(rows[0]["total_cost_usd"]) == pytest.approx(3.0)

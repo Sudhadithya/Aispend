@@ -57,15 +57,18 @@ aispend/
 │   ├── db.py             → connection pool, query functions
 │   └── schema.sql        → requests table DDL
 tests/
-│   ├── test_capture.py
-│   ├── test_pricing.py
-│   ├── test_storage.py
-│   └── test_efficiency_flags.py
+│   ├── test_capture.py       → response parsing, streaming and non-streaming
+│   ├── test_pricing.py       → cost math, cache rates, dated price changes
+│   ├── test_storage.py       → query functions against a test Postgres schema
+│   ├── test_efficiency_flags.py
+│   ├── test_proxy.py         → header handling and passthrough, upstream mocked
+│   └── test_integration.py   → proxy → capture → pricing → Postgres, end to end
 docker-compose.yml         → Postgres service for local dev
 .env.example                → ANTHROPIC_API_KEY, DATABASE_URL, PROXY_PORT
 pyproject.toml
 docs/
-│   └── SPEC.md            → this file
+│   ├── SPEC.md            → this file
+│   └── INTERVIEW.md       → architecture walkthrough and decision rationale
 README.md
 ```
 
@@ -82,15 +85,15 @@ def insert_request(
     cost_usd: float,
     latency_ms: int,
     source_tool: str | None,
+    cache_read_tokens: int = 0,
+    cache_write_5m_tokens: int = 0,
+    cache_write_1h_tokens: int = 0,
 ) -> None:
-    """Metadata only — never pass prompt/response content into this function."""
-    conn.execute(
-        """
-        INSERT INTO requests (model, input_tokens, output_tokens, cost_usd, latency_ms, source_tool, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, now())
-        """,
-        (model, input_tokens, output_tokens, cost_usd, latency_ms, source_tool),
-    )
+    """Metadata only — never pass prompt/response content into this function.
+
+    `input_tokens` is the uncached remainder the API reports; the cache
+    counters are stored alongside it rather than summed into it.
+    """
 ```
 
 - Type hints everywhere (`from __future__ import annotations` not needed at 3.11+)
@@ -102,7 +105,9 @@ def insert_request(
 
 - `pytest`, tests live in `tests/`, mirroring the source tree
 - **Unit level:** `pricing.py` cost calculations, `capture.py` parsing of Anthropic response shapes (streaming and non-streaming), `efficiency_flags.py` heuristic logic, storage query functions against a test Postgres schema
-- **Manual/integration level (not automated in v1):** actually pointing Claude Code at the running proxy and confirming a real session gets captured correctly. Documented as a manual verification checklist in the README, not a CI-gated test, since it requires a live Anthropic key and a running Claude Code session
+- **Proxy level:** upstream is an `httpx.MockTransport`, so header handling, passthrough fidelity, and the capture/skip decision are testable without the network or a live key
+- **Automated integration:** `test_integration.py` drives a request through the real proxy app into real Postgres (upstream still mocked) and asserts the stored row and its cost. This is the seam where the two halves of the system meet, and where a failure is silent rather than loud — the proxy keeps serving traffic while capture writes nothing — so it is worth covering automatically rather than by checklist
+- **Manual (not automated):** pointing Claude Code at the running proxy and confirming a real session is captured. Stays a README checklist since it needs a live Anthropic key and a running Claude Code session
 - No coverage percentage target — this is a portfolio project, prioritize tests that catch real breakage (streaming parsing, cost math) over blanket coverage
 
 ## Boundaries
@@ -124,6 +129,9 @@ def insert_request(
 
 ## Resolved Questions
 
-- Pricing table staleness: README documents `pricing.py` as a hardcoded snapshot needing manual updates.
+- Pricing table staleness: README documents `pricing.py` as a hardcoded snapshot needing manual updates. An unpriceable model fails closed (no row written) and logs an error naming the model ID, rather than guessing a rate and recording a wrong number.
 - Local setup: Postgres only, no SQLite fallback.
 - `source_tool`: left `null` in v1 (single client in scope; no meaningful "spend by tool" split yet).
+- Cached tokens: stored as three additional columns (`cache_read_tokens`, `cache_write_5m_tokens`, `cache_write_1h_tokens`) rather than summed into `input_tokens`. They bill at different rates (0.1x / 1.25x / 2x base input), so they cannot share a column with uncached input without losing the ability to price them — and keeping them separate leaves the door open to reporting a cache-hit rate.
+- Schema evolution: `schema.sql` is replayed on every startup, so it must stay idempotent. New columns are added via `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` rather than edited into the `CREATE TABLE`, which would only affect fresh databases.
+- Mid-stream disconnects: not recorded. A truncated SSE body has no final `message_delta`, so its token counts would understate the request; a missing row is preferable to a wrong one in a tool whose only job is to be numerically correct.
