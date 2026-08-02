@@ -51,8 +51,70 @@ def test_does_not_flag_opus_with_large_prompt(conn):
     assert flags == []
 
 
-def test_does_not_flag_non_opus_small_prompt(conn):
+def test_flags_sonnet_with_small_prompt_suggesting_haiku(conn):
     _insert(conn, model="claude-sonnet-5", input_tokens=50, output_tokens=20)
+
+    flags = get_efficiency_flags()
+
+    assert len(flags) == 1
+    assert flags[0]["model"] == "claude-sonnet-5"
+    assert "Haiku" in flags[0]["reason"]
+
+
+def test_does_not_flag_haiku_small_prompt(conn):
+    _insert(conn, model="claude-haiku-4-5", input_tokens=50, output_tokens=20)
+
+    flags = get_efficiency_flags()
+
+    assert flags == []
+
+
+def test_does_not_flag_sonnet_with_large_prompt(conn):
+    _insert(conn, model="claude-sonnet-5", input_tokens=2000, output_tokens=1000)
+
+    flags = get_efficiency_flags()
+
+    assert flags == []
+
+
+def test_flags_opus_and_sonnet_together_ordered_by_time(conn):
+    _insert(conn, model="claude-sonnet-5", input_tokens=50, output_tokens=20)
+    _insert(conn, model="claude-opus-4-20250514", input_tokens=50, output_tokens=20)
+
+    flags = get_efficiency_flags()
+
+    assert [f["model"] for f in flags] == ["claude-sonnet-5", "claude-opus-4-20250514"]
+
+
+def test_flags_fable_with_small_prompt_suggesting_opus(conn):
+    _insert(conn, model="claude-fable-5", input_tokens=50, output_tokens=20)
+
+    flags = get_efficiency_flags()
+
+    assert len(flags) == 1
+    assert flags[0]["model"] == "claude-fable-5"
+    assert "Opus" in flags[0]["reason"]
+
+
+def test_flags_mythos_with_small_prompt_suggesting_opus(conn):
+    _insert(conn, model="claude-mythos-5", input_tokens=50, output_tokens=20)
+
+    flags = get_efficiency_flags()
+
+    assert len(flags) == 1
+    assert flags[0]["model"] == "claude-mythos-5"
+    assert "Opus" in flags[0]["reason"]
+
+
+def test_does_not_flag_small_prompt_against_large_cached_context_sonnet(conn):
+    """A short question over 50k of cached context is not a small request."""
+    _insert(
+        conn,
+        model="claude-sonnet-5",
+        input_tokens=20,
+        output_tokens=30,
+        cache_read_tokens=50_000,
+    )
 
     flags = get_efficiency_flags()
 

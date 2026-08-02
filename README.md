@@ -109,8 +109,13 @@ Requires Docker, Python 3.11+, and [`uv`](https://docs.astral.sh/uv/).
    from aispend.storage import db
    with db.get_connection() as conn:
        db.init_schema(conn)
+   db.close_pool()
    "
    ```
+   The `close_pool()` matters: left to the garbage collector, psycopg_pool's
+   finalizer tries to join its worker threads after the interpreter has begun
+   shutting down, and prints a `PythonFinalizationError` traceback on exit.
+   The schema is still created — but the noise looks like a failure.
 4. Run the proxy:
    ```bash
    uv run uvicorn aispend.proxy.app:app --port 8787
@@ -118,6 +123,31 @@ Requires Docker, Python 3.11+, and [`uv`](https://docs.astral.sh/uv/).
 5. Point any Anthropic-compatible client at it:
    ```bash
    export ANTHROPIC_BASE_URL=http://localhost:8787
+   ```
+   PowerShell: `$env:ANTHROPIC_BASE_URL = "http://localhost:8787"`
+6. Smoke-test the whole pipeline with one cheap request, using the payload in
+   [`tests/sample_request.json`](tests/sample_request.json):
+   ```bash
+   curl -X POST http://localhost:8787/v1/messages \
+     -H "x-api-key: $ANTHROPIC_API_KEY" \
+     -H "anthropic-version: 2023-06-01" \
+     -H "content-type: application/json" \
+     --data "@tests/sample_request.json"
+   ```
+   PowerShell (`curl.exe` doesn't parse single-quoted JSON the way a Unix
+   shell does, so use `--data @file` rather than an inline `-d '...'`):
+   ```powershell
+   curl.exe -X POST http://localhost:8787/v1/messages `
+     -H "x-api-key: $env:ANTHROPIC_API_KEY" `
+     -H "anthropic-version: 2023-06-01" `
+     -H "content-type: application/json" `
+     --data "@tests/sample_request.json"
+   ```
+   You should get a short reply from Claude, a `POST /v1/messages` line in the
+   proxy's log, and one new row in `requests`:
+   ```bash
+   docker exec <container-id> psql -U aispend -d aispend -c \
+     "select model, input_tokens, output_tokens, cost_usd, latency_ms from requests order by id desc limit 5;"
    ```
 
 Because capture is best-effort, a missing `DATABASE_URL` or missing table
@@ -129,23 +159,6 @@ The MCP server is normally launched by Claude Code's MCP config rather than
 run by hand. It needs `DATABASE_URL` in its own environment and needs to start
 in the project directory, so pass both explicitly:
 
-<<<<<<< Updated upstream
-```bash
-uv run uvicorn aispend.proxy.app:app --port 8787
-```
-
-Point any Anthropic-compatible client at the proxy:
-
-```bash
-$env:ANTHROPIC_BASE_URL="http://localhost:8787"
-```
-
-The MCP server is normally launched by Claude Code's MCP config, not run
-directly. Add it as a stdio MCP server pointing at:
-
-```
-uv run python -m aispend.mcp_server.server
-=======
 ```json
 {
   "mcpServers": {
@@ -157,7 +170,6 @@ uv run python -m aispend.mcp_server.server
     }
   }
 }
->>>>>>> Stashed changes
 ```
 
 ## Tools

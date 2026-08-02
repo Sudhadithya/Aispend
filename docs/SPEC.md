@@ -122,7 +122,7 @@ def insert_request(
 - [ ] Every request through the proxy produces exactly one row in the `requests` table with correct model, input/output tokens, and computed cost
 - [ ] `get_spend_summary` returns a total that matches a manual `SUM(cost_usd)` over the same window
 - [ ] `get_expensive_requests` returns the top N requests by cost, correctly ordered
-- [ ] `get_efficiency_flags` flags at least the obvious case (a short, simple prompt sent to Opus) using a documented, explainable rule — and is presented as advisory, not a validated savings guarantee
+- [ ] `get_efficiency_flags` flags at least the obvious case (a short, simple prompt sent to Opus) using a documented, explainable rule, and also flags small Sonnet requests as likely Haiku-sufficient and small Fable/Mythos requests as likely Opus-sufficient — each flag names the specific cheaper model it suggests — and is presented as advisory, not a validated savings guarantee
 - [ ] `check_budget` correctly reports over/under a given threshold for a given window
 - [ ] All four MCP tools are invocable from within a live Claude Code session and return legible results
 - [ ] No prompt or response content appears anywhere in the database, at rest, or in logs
