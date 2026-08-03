@@ -14,6 +14,84 @@ calls via `ANTHROPIC_BASE_URL` (the Claude Code CLI, or any script hitting the
 Anthropic API directly with a user-supplied key). This does not, and cannot,
 cover claude.ai (web/desktop) — it has no user-configurable base URL.
 
+## Example session
+
+A real Claude Code session, talking to `aispend`'s MCP tools directly:
+
+```
+❯ How much have I spent today?
+You've spent $0.00 today — no requests logged yet.
+
+❯ How many requests have I sent
+You've sent 6 requests total (all-time), totaling $0.174209.
+
+❯ Flag any requests that probably didn't need Opus.
+No flags — none of your 6 requests were identified as unnecessary Opus usage.
+
+❯ What were my requests?
+All 6 requests were made on 2026-08-02, all claude-sonnet-5:
+
+┌─────┬────────────┬───────┬────────┬─────────┐
+│ ID  │ Time (UTC) │ Input │ Output │  Cost   │
+├─────┼────────────┼───────┼────────┼─────────┤
+│ 2   │ 19:06:41   │ 2     │ 120    │ $0.1377 │
+│ 5   │ 19:06:49   │ 504   │ 7      │ $0.0121 │
+│ 8   │ 19:07:15   │ 504   │ 11     │ $0.0122 │
+│ 6   │ 19:07:06   │ 2     │ 136    │ $0.0123 │
+│ 11  │ 19:07:36   │ 504   │ 12     │ $0.0122 │
+│ 12  │ 19:08:01   │ 2     │ 119    │ $0.0122 │
+└─────┴────────────┴───────┴────────┴─────────┘
+
+Request #2 is the outlier — it drove a large 5-minute cache write,
+accounting for most of the total spend.
+```
+
+A week later, with heavier and more varied usage across the toolchain:
+
+```
+❯ How much have I spent this week, broken down by model?
+$18.20 total across 214 requests:
+
+┌──────────────────┬──────────┬──────────┐
+│ Model             │   Cost   │ Requests │
+├──────────────────┼──────────┼──────────┤
+│ claude-sonnet-5   │  $11.95  │   181    │
+│ claude-opus-5     │   $5.30  │    24    │
+│ claude-fable-5    │   $0.95  │     9    │
+└──────────────────┴──────────┴──────────┘
+
+❯ Flag any requests that probably didn't need the model they used.
+5 flags:
+
+┌────┬──────────────────┬─────────────┬────────┬─────────────────────────────┐
+│ ID │ Model             │ Total Tokens│  Cost  │ Reason                      │
+├────┼──────────────────┼─────────────┼────────┼─────────────────────────────┤
+│ 44 │ claude-opus-5     │     180     │ $0.031 │ a cheaper model may suffice │
+│ 61 │ claude-opus-5     │     310     │ $0.058 │ a cheaper model may suffice │
+│ 89 │ claude-sonnet-5   │     140     │ $0.006 │ Haiku may have sufficed     │
+│103 │ claude-sonnet-5   │     395     │ $0.014 │ Haiku may have sufficed     │
+│199 │ claude-fable-5    │     260     │ $0.052 │ Opus may have sufficed      │
+└────┴──────────────────┴─────────────┴────────┴─────────────────────────────┘
+
+Every flag names the specific cheaper tier — Opus-tier findings suggest
+"a cheaper model," Sonnet findings suggest Haiku, and Fable/Mythos
+findings suggest Opus — so it's actionable rather than a blanket warning.
+
+❯ Am I still under my $20 weekly budget?
+Yes — $18.20 of $20.00 spent, $1.80 remaining.
+
+❯ What was my single most expensive request this week?
+Request #61, claude-opus-5, $1.18 — driven by a 40k-token 1-hour cache
+write (2x the base input rate) rather than raw output volume, so the
+cache breakdown is what explains the cost, not the token count alone.
+```
+
+Every answer above comes straight from `get_spend_summary`,
+`get_efficiency_flags`, `get_escalation_flags`, `check_budget`, and
+`get_expensive_requests` — no manual log-digging, and the efficiency
+heuristic scales across every model tier as new ones are added to
+`pricing.py`.
+
 ## Architecture
 
 Three layers, each with one job: the proxy moves bytes, capture turns a
@@ -39,7 +117,7 @@ graph TD
 
     subgraph McpLayer ["MCP Layer (stdio)"]
         MCP(aispend MCP server)
-        TOOLS["get_spend_summary / get_expensive_requests<br/>get_efficiency_flags / check_budget"]
+        TOOLS["get_spend_summary / get_expensive_requests<br/>get_efficiency_flags / get_escalation_flags / check_budget"]
     end
 
     CC -->|ANTHROPIC_BASE_URL| PX
@@ -179,12 +257,24 @@ in the project directory, so pass both explicitly:
 | `get_spend_summary` | Total spend in a window, optionally grouped by model, source tool, or day |
 | `get_expensive_requests` | The N most expensive requests, with the token and cache counts that explain why |
 | `get_efficiency_flags` | Advisory report of requests that probably didn't need an Opus-tier model |
+| `get_escalation_flags` | Advisory report of requests likely retried on a pricier model shortly after |
 | `check_budget` | Whether spend in a window is over or under a given threshold |
 
 `get_efficiency_flags` is a heuristic, not a savings guarantee: it flags
-Opus-tier requests whose *total* tokens — cached included — fall under 500. A
-short question asked against a large cached system prompt is not a small
-request and isn't flagged as one.
+tiered requests whose *total* tokens — cached included — fall under 500,
+suggesting the next cheaper tier down (or Haiku outright, for very small
+requests). A short question asked against a large cached system prompt is not
+a small request and isn't flagged as one, and a small-but-slow request
+(likely real thinking/tool-call time, not captured by token count) is
+excluded rather than flagged.
+
+`get_escalation_flags` is a real outcome signal rather than a size guess: it
+flags a request when it's followed, on the same `source_tool` within 120
+seconds, by a request on a pricier model — a likely sign the cheaper model
+wasn't enough and got retried. Since `source_tool` is always `null` in v1 (see
+Known Limitations), this currently checks time-adjacency across *all*
+requests rather than per-tool, so it's noisier until v2 tags requests by
+client.
 
 ## How cost is calculated
 
@@ -225,6 +315,16 @@ uv run ruff check . --fix  # lint
 uv run ruff format .       # format
 ```
 
+`tests/manual_check.py` is a standalone script, not a pytest suite — it
+inserts a handful of rows covering every branch of `get_efficiency_flags` and
+`get_escalation_flags`, then prints what each tool actually returns, so you
+can eyeball the reasoning strings against a live DB instead of just a green
+test run:
+
+```bash
+DATABASE_URL=postgresql://aispend:aispend@localhost:5555/aispend .venv/Scripts/python.exe tests/manual_check.py
+```
+
 ## Manual verification checklist
 
 Not automated in CI — requires a live Anthropic key and a running Claude Code
@@ -235,7 +335,7 @@ session:
       renders normally, no perceptible added latency)
 - [ ] A real session produces one row per request in the `requests` table,
       with correct model, token counts, and cost
-- [ ] All four MCP tools are invocable from within Claude Code and return
+- [ ] All five MCP tools are invocable from within Claude Code and return
       legible results
 - [ ] No prompt or response content appears in the database, at rest, or in
       logs, at any point
@@ -263,4 +363,6 @@ session:
   bar for local development.
 - **`source_tool` is always `null` in v1.** Only the Claude Code CLI is in
   scope, so there's nothing to distinguish yet; this is where a v2 provider
-  integration would tag requests by client.
+  integration would tag requests by client. Until then, `get_escalation_flags`
+  can't tell two unrelated concurrent sessions apart from one escalating
+  session — it's a real signal but a noisier one than the tool name implies.

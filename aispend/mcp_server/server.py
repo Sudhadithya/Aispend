@@ -10,6 +10,9 @@ from aispend.mcp_server.tools.budget_check import check_budget as _check_budget
 from aispend.mcp_server.tools.efficiency_flags import (
     get_efficiency_flags as _get_efficiency_flags,
 )
+from aispend.mcp_server.tools.escalation_flags import (
+    get_escalation_flags as _get_escalation_flags,
+)
 from aispend.mcp_server.tools.expensive_requests import (
     get_expensive_requests as _get_expensive_requests,
 )
@@ -42,6 +45,14 @@ def get_efficiency_flags(
 ) -> list[dict]:
     """Advisory report of requests that probably didn't need an Opus-tier model."""
     return _get_efficiency_flags(since, until)
+
+
+@mcp.tool()
+def get_escalation_flags(
+    since: datetime | None = None, until: datetime | None = None
+) -> list[dict]:
+    """Advisory report of requests likely retried on a pricier model shortly after."""
+    return _get_escalation_flags(since, until)
 
 
 @mcp.tool()

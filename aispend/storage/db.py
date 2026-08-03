@@ -174,6 +174,7 @@ def get_small_requests(
     *,
     model_prefix: str,
     max_total_tokens: int,
+    max_latency_ms: int | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
 ) -> list[dict]:
@@ -183,6 +184,11 @@ def get_small_requests(
     The filter runs in SQL rather than in Python so the whole table doesn't
     have to cross the wire to find what is normally a handful of rows.
     `model_prefix` is matched with LIKE, so it must not contain % or _.
+
+    `max_latency_ms`, if given, excludes requests that took at least that
+    long: a slow response despite a low token count likely reflects real
+    compute (extended thinking, tool calls) that the token count alone
+    doesn't capture, not an oversized model on a trivial prompt.
     """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
@@ -191,11 +197,60 @@ def get_small_requests(
             FROM requests
             WHERE model LIKE %s
               AND {_TOTAL_TOKENS_SQL} < %s
+              AND (%s::int IS NULL OR latency_ms < %s)
               AND (%s::timestamptz IS NULL OR created_at >= %s)
               AND (%s::timestamptz IS NULL OR created_at < %s)
             ORDER BY created_at
             """,
-            (f"{model_prefix}%", max_total_tokens, since, since, until, until),
+            (
+                f"{model_prefix}%",
+                max_total_tokens,
+                max_latency_ms,
+                max_latency_ms,
+                since,
+                since,
+                until,
+                until,
+            ),
+        )
+        return cur.fetchall()
+
+
+def get_adjacent_request_pairs(
+    conn: psycopg.Connection,
+    *,
+    max_gap_seconds: int,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> list[dict]:
+    """Consecutive request pairs on the same `source_tool`, ordered by time,
+    where the gap between them is at most `max_gap_seconds`.
+
+    There's no session/user id in this schema, so "consecutive on the same
+    tool within a short gap" is the closest available proxy for "the same
+    task, retried." Whether the second request escalated to a pricier model
+    is left to the caller, since per-token price isn't known to the database.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT id, model, created_at, next_id, next_model, next_created_at
+            FROM (
+                SELECT
+                    id, model, created_at,
+                    LEAD(id) OVER w AS next_id,
+                    LEAD(model) OVER w AS next_model,
+                    LEAD(created_at) OVER w AS next_created_at
+                FROM requests
+                WHERE (%s::timestamptz IS NULL OR created_at >= %s)
+                  AND (%s::timestamptz IS NULL OR created_at < %s)
+                WINDOW w AS (PARTITION BY source_tool ORDER BY created_at)
+            ) pairs
+            WHERE next_id IS NOT NULL
+              AND next_created_at - created_at <= make_interval(secs => %s)
+            ORDER BY created_at
+            """,
+            (since, since, until, until, max_gap_seconds),
         )
         return cur.fetchall()
 
