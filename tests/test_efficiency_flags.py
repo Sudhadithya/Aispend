@@ -87,7 +87,7 @@ def test_flags_opus_and_sonnet_together_ordered_by_time(conn):
 
 
 def test_flags_fable_with_small_prompt_suggesting_opus(conn):
-    _insert(conn, model="claude-fable-5", input_tokens=50, output_tokens=20)
+    _insert(conn, model="claude-fable-5", input_tokens=200, output_tokens=100)
 
     flags = get_efficiency_flags()
 
@@ -97,7 +97,7 @@ def test_flags_fable_with_small_prompt_suggesting_opus(conn):
 
 
 def test_flags_mythos_with_small_prompt_suggesting_opus(conn):
-    _insert(conn, model="claude-mythos-5", input_tokens=50, output_tokens=20)
+    _insert(conn, model="claude-mythos-5", input_tokens=200, output_tokens=100)
 
     flags = get_efficiency_flags()
 
@@ -137,6 +137,51 @@ def test_does_not_flag_small_prompt_against_large_cached_context(conn):
         input_tokens=20,
         output_tokens=30,
         cache_read_tokens=50_000,
+    )
+
+    flags = get_efficiency_flags()
+
+    assert flags == []
+
+
+def test_flags_tiny_opus_prompt_suggesting_haiku(conn):
+    """Well under TINY_REQUEST_TOKEN_THRESHOLD: skip straight to Haiku."""
+    _insert(conn, model="claude-opus-4-20250514", input_tokens=10, output_tokens=10)
+
+    flags = get_efficiency_flags()
+
+    assert len(flags) == 1
+    assert "Haiku" in flags[0]["reason"]
+
+
+def test_flags_moderately_small_opus_prompt_suggesting_sonnet(conn):
+    """Between TINY and SMALL thresholds: suggest the next tier down, not Haiku."""
+    _insert(conn, model="claude-opus-4-20250514", input_tokens=200, output_tokens=100)
+
+    flags = get_efficiency_flags()
+
+    assert len(flags) == 1
+    assert "Sonnet" in flags[0]["reason"]
+
+
+def test_flags_tiny_fable_prompt_suggesting_haiku(conn):
+    _insert(conn, model="claude-fable-5", input_tokens=10, output_tokens=10)
+
+    flags = get_efficiency_flags()
+
+    assert len(flags) == 1
+    assert "Haiku" in flags[0]["reason"]
+
+
+def test_does_not_flag_high_latency_small_prompt(conn):
+    """Slow despite few tokens: likely real compute (thinking/tool calls), not
+    an oversized model on a trivial prompt."""
+    _insert(
+        conn,
+        model="claude-opus-4-20250514",
+        input_tokens=50,
+        output_tokens=20,
+        latency_ms=15_000,
     )
 
     flags = get_efficiency_flags()

@@ -1,13 +1,12 @@
-# This is a basic workflow that is manually triggered
+# This gets automatically triggered when a pull request is opened or when a commit is pushed to the main branch.
 
 name: ci
 
-# Controls when the action will run. Workflow runs when manually triggered using the UI
-# or API.
+# Controls when the action will run. Workflow runs when code is committed or pushed to main/feature branch
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main,feature/*]
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "aispend": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "aispend.mcp_server.server"],
+      "env": { "DATABASE_URL": "postgresql://aispend:aispend@localhost:5555/aispend" }
+    }
+  }
+}
