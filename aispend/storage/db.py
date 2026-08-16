@@ -17,6 +17,15 @@ from psycopg_pool import ConnectionPool
 
 _pool: ConnectionPool | None = None
 
+# psycopg_pool defaults to min_size=4 and max_size=min_size, so the pool is
+# four connections wide unless you say otherwise — a ceiling nobody chose.
+# Measured, that caps writes at ~780/sec and, at 32 concurrent writers, pushes
+# per-write latency from 5ms to 41ms queueing for a slot (see docs/BENCHMARK.md).
+# Sized for a local single-user tool; raise POOL_MAX_SIZE before putting this
+# in front of a team.
+POOL_MIN_SIZE = int(os.environ.get("AISPEND_POOL_MIN_SIZE", "4"))
+POOL_MAX_SIZE = int(os.environ.get("AISPEND_POOL_MAX_SIZE", "16"))
+
 _GROUP_BY_COLUMNS = {
     "model": "model",
     "source_tool": "source_tool",
@@ -49,7 +58,9 @@ def get_pool(database_url: str | None = None) -> ConnectionPool:
                 "DATABASE_URL is not set. Copy .env.example to .env and export it, "
                 "or pass database_url explicitly."
             )
-        _pool = ConnectionPool(url, open=True)
+        _pool = ConnectionPool(
+            url, open=True, min_size=POOL_MIN_SIZE, max_size=POOL_MAX_SIZE
+        )
     return _pool
 
 
