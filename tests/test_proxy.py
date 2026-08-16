@@ -122,3 +122,44 @@ def test_unreachable_upstream_returns_502(captured, monkeypatch):
 
     assert response.status_code == 502
     assert captured == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx.ConnectError("connection refused"), httpx.RemoteProtocolError("server disconnected")],
+)
+def test_upstream_failure_before_the_request_lands_is_retried_once(error, captured, monkeypatch):
+    """A dead pooled connection should cost a retry, not a 502 for the client."""
+    attempts = []
+
+    def handler(request):
+        attempts.append(request)
+        if len(attempts) == 1:
+            raise error
+        return httpx.Response(200, json=MESSAGE)
+
+    response = _client(handler, monkeypatch).post("/v1/messages", json={})
+
+    assert response.status_code == 200
+    assert response.json() == MESSAGE
+    assert len(attempts) == 2
+    assert len(captured) == 1
+
+
+def test_upstream_read_failure_is_not_retried(captured, monkeypatch):
+    """Only failures that provably never reached Anthropic are safe to replay.
+
+    A read error means the request may well have been processed and billed, so
+    retrying it risks a second charge for one client request.
+    """
+    attempts = []
+
+    def handler(request):
+        attempts.append(request)
+        raise httpx.ReadError("connection reset mid-response")
+
+    response = _client(handler, monkeypatch).post("/v1/messages", json={})
+
+    assert response.status_code == 502
+    assert len(attempts) == 1
+    assert captured == []
